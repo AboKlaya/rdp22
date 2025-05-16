@@ -1,0 +1,58 @@
+name: RDP Access (6 Hours)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360  # أقصى مدة تشغيل 6 ساعات
+
+    steps:
+    - name: تحميل ngrok
+      run: Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+
+    - name: فك الضغط
+      run: Expand-Archive ngrok.zip
+
+    - name: ضبط توكن ngrok
+      run: .\ngrok\ngrok.exe authtoken $Env:NGROK_AUTH_TOKEN
+      env:
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+
+    - name: توليد اسم مستخدم وباسورد عشوائي
+      id: creds
+      run: |
+        $user = "user" + (Get-Random -Minimum 1000 -Maximum 9999)
+        $pass = [guid]::NewGuid().ToString("N").Substring(0,12) + "!"
+        echo "username=$user" >> $env:GITHUB_OUTPUT
+        echo "password=$pass" >> $env:GITHUB_OUTPUT
+
+    - name: تفعيل RDP وإنشاء المستخدم
+      run: |
+        net user ${{ steps.creds.outputs.username }} "${{ steps.creds.outputs.password }}" /add
+        net localgroup administrators ${{ steps.creds.outputs.username }} /add
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+
+    - name: تثبيت Google Chrome
+      run: |
+        Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" -OutFile "chrome.exe"
+        Start-Process .\chrome.exe -ArgumentList "/silent /install" -Wait
+
+    - name: بدء ngrok (TCP)
+      run: Start-Process -FilePath ".\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -NoNewWindow
+
+    - name: الانتظار قليلاً
+      run: Start-Sleep -Seconds 15
+
+    - name: عرض بيانات الاتصال
+      run: |
+        $tunnels = Invoke-RestMethod -Uri http://127.0.0.1:4040/api/tunnels
+        $tcp = $tunnels.tunnels | Where-Object { $_.proto -eq "tcp" }
+        Write-Host "====================================="
+        Write-Host "RDP Address: $($tcp.public_url)"
+        Write-Host "Username: ${{ steps.creds.outputs.username }}"
+        Write-Host "Password: ${{ steps.creds.outputs.password }}"
+        Write-Host "====================================="
